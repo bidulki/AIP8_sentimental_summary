@@ -22,6 +22,7 @@ cleaned_summary=np.array(data['Summary'])
 cleaned_score = np.array(data['Score'])
 
 short_text = []
+
 short_summary = []
 short_score = []
 
@@ -64,27 +65,25 @@ test_loader = DataLoader(test_dataset, batch_size=batch_size, collate_fn=collate
 
 def train(model_summary, model_sentiment, iterator, optimizer_summary, optimizer_sentiment, criterion_summary, criterion_sentiment, clip):
     model_summary.train()
-    model_sentiment.train()
+    
     epoch_loss = 0
     for i, batch in enumerate(tqdm(iterator)):
         src, trg, label = batch
         src, trg, label = src.to(device), trg.to(device), label.to(device)
         label = label.squeeze()
-        optimizer_sentiment.zero_grad()
-        output_sentiment = model_sentiment(src)
-        loss_sentiment = criterion_sentiment(output_sentiment, label)
-        loss_sentiment.backward()
-        torch.nn.utils.clip_grad_norm_(model_sentiment.parameters(), clip)
-        optimizer_sentiment.step()
+
 
         optimizer_summary.zero_grad()
-        sentiment_hidden = model_sentiment.hidden(src)
-        output = model_summary(src, trg[:-1], sentiment_hidden)
+        output, output_sentiment = model_summary(src, trg[:-1])
         output_dim = output.shape[-1]
         output = output.reshape(-1, output_dim)
         trg = trg[1:].reshape(-1)
 
-        loss_summary = criterion_summary(output, trg)
+        loss_text = criterion_summary(output, trg)
+        #print(output_sentiment.size())
+        #print(label.size())
+        loss_sentiment = criterion_sentiment(output_sentiment, label)
+        loss_summary = loss_text + loss_sentiment
         loss_summary.backward()
 
         torch.nn.utils.clip_grad_norm_(model_summary.parameters(), clip)
@@ -97,7 +96,6 @@ def train(model_summary, model_sentiment, iterator, optimizer_summary, optimizer
 
 def evaluate(model_summary, model_sentiment, iterator, criterion_summary):
     model_summary.eval()
-    model_sentiment.eval()  
     epoch_loss = 0
 
     with torch.no_grad():  
@@ -105,8 +103,8 @@ def evaluate(model_summary, model_sentiment, iterator, criterion_summary):
             src, trg, label = batch
             src, trg, label = src.to(device), trg.to(device), label.to(device)
             label = label.squeeze()
-            sentiment_hidden = model_sentiment.hidden(src)
-            output = model_summary(src, trg[:-1], sentiment_hidden, 0) 
+            #sentiment_hidden = model_sentiment.hidden(src)
+            output, _ = model_summary(src, trg[:-1], 0) 
 
             output_dim = output.shape[-1]
             output = output.reshape(-1, output_dim)
@@ -122,7 +120,7 @@ def evaluate(model_summary, model_sentiment, iterator, criterion_summary):
 device = torch.device("cuda")
 input_dim = len(vocab)
 output_dim = len(vocab)
-encoder = EncoderLSTM(input_dim, 256, 512, 2, 0.5)
+encoder = EncoderLSTM(input_dim, 256, 512, 5, 2, 0.5)
 decoder = DecoderLSTM(output_dim, 256, 512, 2, 0.5)
 model_summary = Seq2Seq(encoder, decoder, device).to(device)
 

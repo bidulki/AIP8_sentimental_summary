@@ -63,7 +63,7 @@ train_loader = DataLoader(train_dataset, batch_size=batch_size, collate_fn=colla
 valid_loader = DataLoader(valid_dataset, batch_size=batch_size, collate_fn=collate_fn)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, collate_fn=collate_fn)
 
-def train(model_summary, model_sentiment, iterator, optimizer_summary, optimizer_sentiment, criterion_summary, criterion_sentiment, clip):
+def train(model_summary, iterator, optimizer_summary,  criterion_summary, clip, device):
     model_summary.train()
     
     epoch_loss = 0
@@ -72,7 +72,6 @@ def train(model_summary, model_sentiment, iterator, optimizer_summary, optimizer
         src, trg, label = src.to(device), trg.to(device), label.to(device)
         label = label.squeeze()
 
-
         optimizer_summary.zero_grad()
         output, output_sentiment = model_summary(src, trg[:-1])
         output_dim = output.shape[-1]
@@ -80,10 +79,9 @@ def train(model_summary, model_sentiment, iterator, optimizer_summary, optimizer
         trg = trg[1:].reshape(-1)
 
         loss_text = criterion_summary(output, trg)
-        #print(output_sentiment.size())
-        #print(label.size())
         loss_sentiment = criterion_sentiment(output_sentiment, label)
-        loss_summary = loss_text + loss_sentiment
+    
+        loss_summary = loss_text * 0.8 + loss_sentiment * 0.2
         loss_summary.backward()
 
         torch.nn.utils.clip_grad_norm_(model_summary.parameters(), clip)
@@ -94,7 +92,7 @@ def train(model_summary, model_sentiment, iterator, optimizer_summary, optimizer
 
     return epoch_loss / len(iterator)
 
-def evaluate(model_summary, model_sentiment, iterator, criterion_summary):
+def evaluate(model_summary, iterator, criterion_summary, device):
     model_summary.eval()
     epoch_loss = 0
 
@@ -104,7 +102,7 @@ def evaluate(model_summary, model_sentiment, iterator, criterion_summary):
             src, trg, label = src.to(device), trg.to(device), label.to(device)
             label = label.squeeze()
             #sentiment_hidden = model_sentiment.hidden(src)
-            output, _ = model_summary(src, trg[:-1], 0) 
+            output, _ = model_summary(src, trg[:-1]) 
 
             output_dim = output.shape[-1]
             output = output.reshape(-1, output_dim)
@@ -120,31 +118,29 @@ def evaluate(model_summary, model_sentiment, iterator, criterion_summary):
 device = torch.device("cuda")
 input_dim = len(vocab)
 output_dim = len(vocab)
-encoder = EncoderLSTM(input_dim, 256, 512, 5, 2, 0.5)
-decoder = DecoderLSTM(output_dim, 256, 512, 2, 0.5)
-model_summary = Seq2Seq(encoder, decoder, device).to(device)
+#print(len(vocab))
+encoder = EncoderLSTM(input_dim, 256, 512, 0.2)
+decoder = DecoderLSTM(output_dim, 256, 512, 0.2)
+model_summary = Seq2Seq(encoder, decoder, 512, 5, device).to(device)
 
-optimizer_summary = optim.Adam(model_summary.parameters(),)
+optimizer_summary = optim.Adam(model_summary.parameters(), lr= 0.01)
 pad_idx = vocab.stoi["<PAD>"]
 criterion_summary = nn.CrossEntropyLoss(ignore_index=pad_idx)
-
-model_sentiment = SentimentLSTM(input_dim, 256, 512, 5, 2, 0.5).to(device)
-optimizer_sentiment = optim.Adam(model_sentiment.parameters())
 criterion_sentiment = nn.CrossEntropyLoss()
 num_epochs = 10
 clip = 1
 
 for epoch in range(num_epochs):
-    train_loss = train(model_summary=model_summary, model_sentiment=model_sentiment, iterator=train_loader,\
-                    optimizer_summary=optimizer_summary, optimizer_sentiment=optimizer_sentiment, \
-                    criterion_summary=criterion_summary, criterion_sentiment=criterion_sentiment, clip=clip)
-    valid_loss = evaluate(model_summary=model_summary, model_sentiment=model_sentiment, iterator=valid_loader, \
-                    criterion_summary=criterion_summary)
+    train_loss = train(model_summary=model_summary, iterator=train_loader,\
+                    optimizer_summary=optimizer_summary,  \
+                    criterion_summary=criterion_summary,  clip=clip, device=device)
+    valid_loss = evaluate(model_summary=model_summary,  iterator=valid_loader, \
+                    criterion_summary=criterion_summary, device=device)
 
     print(f'Epoch: {epoch+1:02}')
     print(f'\tTrain Loss: {train_loss:.3f}')
     print(f'\t Val. Loss: {valid_loss:.3f}')
 
-test_loss = evaluate(model_summary=model_summary, model_sentiment=model_sentiment, iterator=test_loader, \
-                    criterion_summary=criterion_summary)
+test_loss = evaluate(model_summary=model_summary,  iterator=test_loader, \
+                    criterion_summary=criterion_summary, device=device)
 print(f'Test Loss: {test_loss:.3f}')

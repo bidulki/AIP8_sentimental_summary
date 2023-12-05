@@ -2,118 +2,88 @@ import torch
 import torch.nn as nn 
 import torch.nn.functional as F
 import random
-
-class SentimentLSTM(nn.Module):
-    def __init__(self, input_dim, emb_dim, hidden_dim, output_dim, n_layers, dropout):
-        super().__init__()
-        self.embedding = nn.Embedding(input_dim, emb_dim)
-        self.lstm = nn.LSTM(emb_dim, hidden_dim, num_layers=n_layers, dropout=dropout)
-        self.fc = nn.Linear(hidden_dim, output_dim)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, text):
-        embedded = self.dropout(self.embedding(text))
-        output, (hidden, cell) = self.lstm(embedded)
-        hidden = self.dropout(hidden[-1, :, :])
-        return self.fc(hidden)
-    
-    def hidden(self, text):
-        embedded = self.dropout(self.embedding(text))
-        output, (hidden, cell) = self.lstm(embedded)
-        return hidden
-
-class SimpleAttention(nn.Module):
-    def __init__(self, embed_dim, device):
-        super(SimpleAttention, self).__init__()
-        self.embed_dim = embed_dim
-        self.device = device
-        self.scale = torch.sqrt(torch.FloatTensor([self.embed_dim])).to(self.device)
-
-    def forward(self, query, key, value):
-        # 쿼리와 키의 내적을 계산하여 유사도 점수를 구함
-        query, key, value = query.to(self.device), key.to(self.device), value.to(self.device)
-        attention_scores = torch.matmul(query, key.transpose(-2, -1)) / self.scale
-
-        # 소프트맥스를 통해 정규화된 어텐션 가중치를 구함
-        attention_weights = F.softmax(attention_scores, dim=-1)
-
-        # 가중치와 밸류를 곱하여 출력을 구함
-        output = torch.matmul(attention_weights, value)
-
-        return output
     
 class EncoderLSTM(nn.Module):
-    def __init__(self, input_dim, emb_dim, hidden_dim, output_dim, n_layers, dropout):
+    def __init__(self, input_dim, emb_dim, hidden_dim, dropout):
         super().__init__()
          # Word embedding layer
         self.embedding = nn.Embedding(input_dim, emb_dim)
-        self.rnn_text = nn.GRU(emb_dim, hidden_dim, n_layers, dropout=dropout, bidirectional=False)
-        self.rnn_sent = nn.GRU(emb_dim, hidden_dim, n_layers, dropout=dropout, bidirectional=False)
-
-        # Mean-pooling layer
-        self.mean_pooling = nn.AdaptiveAvgPool1d(1)  # Global average pooling
-
-        # Dropout layer
-        self.dropout = nn.Dropout(dropout)
-        self.fc = nn.Linear(hidden_dim, output_dim) 
-
+        self.lstm_context = nn.LSTM(emb_dim, hidden_dim, dropout=dropout)
+        self.lstm_sentiment = nn.LSTM(emb_dim, hidden_dim, dropout=dropout)
 
     def forward(self, src):
-         # Input review is a list of word indices
-
-        # Word embedding
-        embedded = self.dropout(self.embedding(src))
-        outputs_text, hidden_text = self.rnn_text(embedded)
-        outputs_sent, hidden_sent = self.rnn_sent(embedded)
-
-        # Mean-pooling to obtain initial representations
-        #v_context = torch.mean(h_context, dim=1)
-        #v_sentiment = torch.mean(h_sentiment, dim=1)
+        embedded = self.embedding(src)
         
-        #return v_context, self.fc(v_sentiment)
-        hidden_sent = hidden_sent[-1, :, :]
-        return outputs_text, hidden_text, self.fc(hidden_sent), hidden_sent
+        _, (context_hidden, _) = self.lstm_context(embedded)
+        _, (sentiment_hidden, _) = self.lstm_sentiment(embedded)
+        
+        return context_hidden, sentiment_hidden
     
+class Attention(nn.Module):
+    def __init__(self, hidden_dim):
+        super(Attention, self).__init__()
+        self.Wc = nn.Linear(hidden_dim * 2, hidden_dim)
+        self.Uc = nn.Linear(hidden_dim, 1)
+
+    def forward(self, context, sentiment):
+        combined = torch.cat([context, sentiment], dim=2)
+        scores = self.Uc(torch.tanh(self.Wc(combined)))
+        attention_weights = F.softmax(scores, dim=0)
+        
+        return attention_weights
+
 class DecoderLSTM(nn.Module):
-    def __init__(self, output_dim, emb_dim, hidden_dim, n_layers, dropout):
+    def __init__(self, output_dim, emb_dim, hidden_dim, dropout):
         super().__init__()
-        self.output_dim = output_dim
         self.embedding = nn.Embedding(output_dim, emb_dim)
-        self.rnn = nn.GRU(emb_dim, hidden_dim, n_layers, dropout=dropout, bidirectional=False)
-        self.fc_out = nn.Linear(hidden_dim, output_dim)
+        self.lstm = nn.LSTM(emb_dim, hidden_dim, dropout=dropout)
+        self.attention = Attention(hidden_dim)
+        self.fc = nn.Linear(hidden_dim * 2, output_dim)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, input, hidden):
-        input = input.unsqueeze(0)
-        embedded = self.dropout(self.embedding(input))
-        output, hidden = self.rnn(embedded, hidden)
-        prediction = self.fc_out(output.squeeze(0))
-        return prediction, hidden
+    def forward(self, input, hidden, context, sentiment):
+        embedded = self.embedding(input)
+        output, hidden = self.lstm(embedded, hidden)
+        
+        attention_weights = self.attention(context, sentiment)
+        context_vector = torch.sum(attention_weights * context, dim=0, keepdim=True)
+        
+        # Unsqueeze context_vector to match the sequence length dimension of output
+        output = output.unsqueeze(0)
+
+        output = torch.cat([output, context_vector], dim=2)
+        output = self.fc(output)
+        output = self.dropout(output)
+        
+        return output, hidden, attention_weights
 
 class Seq2Seq(nn.Module):
-    def __init__(self, encoder, decoder, device):
+    def __init__(self, encoder, decoder, hidden_dim, output_dim, device):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.device = device
+        self.fc = nn.Linear(hidden_dim, output_dim)
         
-    def forward(self, src, trg, teacher_forcing_ratio = 0.5):
-        trg_len = trg.shape[0]
-        batch_size = trg.shape[1]
-        trg_vocab_size = self.decoder.output_dim
-        outputs = torch.zeros(trg_len, batch_size, trg_vocab_size).to(self.device)
+    def forward(self, src, trg):
 
-        #encoder_outputs, hidden, sent_outputs = self.encoder(src)
+        context, sentiment = self.encoder(src)
+        target_length = trg.size(0)
+        batch_size = trg.size(1)
+        vocab_size = self.decoder.fc.out_features
+        
+        outputs = torch.zeros(target_length, batch_size, vocab_size).to(self.device)
+        hidden = None
+        input = trg[0, :]
 
-        encoder_outputs, hidden, sent_outputs, hidden_sent = self.encoder(src)
-        hidden = 0.7 * hidden + 0.3 * hidden_sent
-        input = trg[0,:]
-
-        for t in range(1, trg_len):
-            output, hidden = self.decoder(input, hidden)
+        #print(outputs.size())
+        for t in range(1, target_length):
+            #decoder_input = trg[t]
+            
+            output, hidden, _ = self.decoder(input, hidden, context, sentiment)
+            #print(outputs.size())
+            #print(output.size())
             outputs[t] = output
-            teacher_force = random.random() < teacher_forcing_ratio
-            top1 = output.argmax(1)
-            input = trg[t] if teacher_force else top1
 
-        return outputs, sent_outputs
+        sentiment = sentiment[-1, :, :]
+        return outputs, self.fc(sentiment)

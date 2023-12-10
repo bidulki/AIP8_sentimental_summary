@@ -1,0 +1,5 @@
+outs:
+- md5: 79dfe1703f7b3200f05441ccb8dbf5b9
+  size: 41455431
+  hash: md5
+  path: news_summary.tsv

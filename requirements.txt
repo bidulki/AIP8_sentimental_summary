@@ -1,3 +1,5 @@
 spacy
 bs4
 lxml
+dvc
+dvc_gdrive

@@ -2,6 +2,8 @@ from string import ascii_lowercase
 import re
 from bs4 import BeautifulSoup
 import pickle
+import nltk
+nltk.download('stopwords')
 from nltk.corpus import stopwords
 
 replace_dict = {

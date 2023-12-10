@@ -1,4 +1,3 @@
 spacy
-pandas
-torch
-tqdm
+bs4
+lxml

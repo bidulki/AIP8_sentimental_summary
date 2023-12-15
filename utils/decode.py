@@ -1,7 +1,7 @@
 import torch
 from tqdm import tqdm
 
-def decode_sequence(sequence):
+def decode_sequence(sequence, y_voc):
     decoded_words = []
     for idx in sequence:
         word = y_voc.itos[idx.item()]
